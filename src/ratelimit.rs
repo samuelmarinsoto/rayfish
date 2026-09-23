@@ -5,18 +5,19 @@
 //! `MemberSync` drives a pkarr resolve and, on a hash change, a blob fetch + DNS
 //! rebuild + firewall re-materialize. They carry no per-message authentication,
 //! so any peer sharing a network can spam them. [`ControlGate`] guards each
-//! control-listener task with a token bucket (the `ratelimit` crate) plus a
-//! strike counter: over-budget messages are dropped, and a peer that sustains a
-//! flood eventually trips [`Verdict::Close`] so the caller can drop the
-//! connection. A peer that only bursts briefly is never penalized: strikes
-//! decay on every admitted message.
+//! control-listener task with a token bucket plus a strike counter: over-budget
+//! messages are dropped, and a peer that sustains a flood eventually trips
+//! [`Verdict::Close`] so the caller can drop the connection. A peer that only
+//! bursts briefly is never penalized: strikes decay on every admitted message.
 //!
 //! One [`ControlGate`] lives per listener task (each task owns exactly one
 //! peer's connection), so there is no shared state and no locking.
+//!
+//! The bucket is inline rather than the `ratelimit` crate: that crate's
+//! `clocksource` dependency needs coarse clock ids OpenBSD's libc does not
+//! have, and the behavior this gate wants is thirty lines of `Instant` math.
 
-use std::time::Duration;
-
-use ratelimit::Ratelimiter;
+use std::time::Instant;
 
 /// Burst of control messages absorbed instantly before throttling kicks in.
 const CAPACITY: u64 = 20;
@@ -38,7 +39,11 @@ pub enum Verdict {
 
 /// Token-bucket guard over one connection's inbound control messages.
 pub struct ControlGate {
-    limiter: Ratelimiter,
+    capacity: f64,
+    refill_per_sec: f64,
+    /// Fractional tokens right now, clamped to `capacity` on refill.
+    tokens: f64,
+    last_refill: Instant,
     strikes: u32,
     strike_limit: u32,
 }
@@ -51,32 +56,38 @@ impl ControlGate {
 
     /// Build a gate with explicit parameters (used by tests).
     pub fn with_params(capacity: u64, refill_per_sec: u64, strike_limit: u32) -> Self {
-        let limiter = Ratelimiter::builder(refill_per_sec, Duration::from_secs(1))
-            .max_tokens(capacity)
-            .initial_available(capacity)
-            .build()
-            .expect("valid ratelimiter parameters");
         Self {
-            limiter,
+            capacity: capacity as f64,
+            refill_per_sec: refill_per_sec as f64,
+            tokens: capacity as f64,
+            last_refill: Instant::now(),
             strikes: 0,
             strike_limit,
         }
     }
 
+    /// Accrue tokens for the time since the last check, clamped to capacity.
+    fn refill(&mut self) {
+        let now = Instant::now();
+        let elapsed = now.duration_since(self.last_refill);
+        self.last_refill = now;
+        self.tokens =
+            (self.tokens + elapsed.as_secs_f64() * self.refill_per_sec).min(self.capacity);
+    }
+
     /// Account for one inbound control message and decide what to do with it.
     pub fn check(&mut self) -> Verdict {
-        match self.limiter.try_wait() {
-            Ok(()) => {
-                self.strikes = self.strikes.saturating_sub(1);
-                Verdict::Allow
-            }
-            Err(_) => {
-                self.strikes = self.strikes.saturating_add(1);
-                if self.strikes >= self.strike_limit {
-                    Verdict::Close
-                } else {
-                    Verdict::Drop
-                }
+        self.refill();
+        if self.tokens >= 1.0 {
+            self.tokens -= 1.0;
+            self.strikes = self.strikes.saturating_sub(1);
+            Verdict::Allow
+        } else {
+            self.strikes = self.strikes.saturating_add(1);
+            if self.strikes >= self.strike_limit {
+                Verdict::Close
+            } else {
+                Verdict::Drop
             }
         }
     }
