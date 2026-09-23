@@ -21,7 +21,11 @@ use std::path::PathBuf;
 // Windows drives the interface through PowerShell (`windows_process`), not a
 // synchronous `Command`, so nothing here needs the blocking spawn. Linux does
 // every one of these through netlink and spawns nothing at all.
-#[cfg(any(target_os = "macos", target_os = "freebsd"))]
+#[cfg(any(
+    target_os = "macos",
+    target_os = "freebsd",
+    target_os = "openbsd"
+))]
 use std::process::Command;
 #[cfg(not(target_os = "android"))]
 use std::sync::Arc;
@@ -329,25 +333,46 @@ pub async fn route_peer_range(tun_name: &str) -> Result<()> {
     .await
 }
 
-#[cfg(any(target_os = "macos", target_os = "freebsd"))]
+#[cfg(any(
+    target_os = "macos",
+    target_os = "freebsd",
+    target_os = "openbsd"
+))]
 pub async fn route_peer_range(tun_name: &str) -> Result<()> {
     // utun is point-to-point, so the address prefix alone does not reliably
     // create the range route; macOS also drops it across an `up`/`down` cycle,
     // so it is re-added on every activate. `route add` fails if the route
     // already exists (e.g. an earlier `up`), so delete any stale entry first and
     // ignore its result. `200::/7` covers `dns::MAGIC_DNS_V6` too.
+    //
+    // OpenBSD's route(8) takes `-iface` where the others spell `-interface`,
+    // and has no `-n` in its synopsis (`route [-dnqtv]`), so the flags are
+    // picked per-platform while the shape of the two calls stays shared.
+    let numeric: &[&str] = if cfg!(target_os = "openbsd") {
+        &[]
+    } else {
+        &["-n"]
+    };
+    let iface_flag = if cfg!(target_os = "openbsd") {
+        "-iface"
+    } else {
+        "-interface"
+    };
     let ranges: &[(&str, &str)] = &[("-inet6", "200::/7")];
     for (family, net) in ranges.iter().copied() {
-        let _ = Command::new("route")
-            .args(["-n", "delete", family, "-net", net, "-interface", tun_name])
-            .status();
+        let mut delete: Vec<&str> = numeric.to_vec();
+        delete.extend(["delete", family, "-net", net, iface_flag, tun_name]);
+        let _ = Command::new("route").args(&delete).status();
+        let mut add: Vec<&str> = numeric.to_vec();
+        add.extend(["add", family, "-net", net, iface_flag, tun_name]);
         let status = Command::new("route")
-            .args(["-n", "add", family, "-net", net, "-interface", tun_name])
+            .args(&add)
             .status()
-            .with_context(|| format!("run route add {family} {net}"))?;
+            .with_context(|| format!("run route {}", add.join(" ")))?;
         anyhow::ensure!(
             status.success(),
-            "route add {family} {net} failed with {status}"
+            "route {} failed with {status}",
+            add.join(" ")
         );
     }
     Ok(())
@@ -544,7 +569,11 @@ pub async fn set_link_down(tun_name: &str) -> Result<()> {
 
 #[cfg(not(target_os = "android"))]
 async fn set_link_state(tun_name: &str, up: bool) -> Result<()> {
-    #[cfg(any(target_os = "macos", target_os = "freebsd"))]
+    #[cfg(any(
+        target_os = "macos",
+        target_os = "freebsd",
+        target_os = "openbsd"
+    ))]
     {
         let state = if up { "up" } else { "down" };
         let status = Command::new("ifconfig")

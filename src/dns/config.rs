@@ -70,9 +70,9 @@ impl SearchDomain {
     /// One the host already had, read back from its own resolver configuration.
     /// Unvalidated on purpose: it is the host's, and we only carry it along.
     ///
-    /// Only the backends that read a file back capture these, and only Linux
-    /// has one.
-    #[cfg(any(target_os = "linux", test))]
+    /// Only the backends that read a file back capture these; Linux and
+    /// OpenBSD both own a file.
+    #[cfg(any(target_os = "linux", target_os = "openbsd", test))]
     fn from_host(domain: &str) -> Self {
         Self(SmolStr::new(domain))
     }
@@ -113,7 +113,7 @@ impl std::fmt::Display for SearchDomain {
 }
 
 /// Render a list the way `resolv.conf` and `resolvconf` want it: space-separated.
-#[cfg(any(target_os = "linux", test))]
+#[cfg(any(target_os = "linux", target_os = "openbsd", test))]
 fn join_domains(domains: &[SearchDomain]) -> String {
     domains
         .iter()
@@ -205,6 +205,13 @@ pub async fn detect_and_configure(
         let configurator = MacosDynamicStoreDns::new(tun_name.to_string(), mesh_v6);
         configurator.apply().await?;
         return Ok(Box::new(configurator));
+    }
+
+    #[cfg(target_os = "openbsd")]
+    {
+        let configurator = OpenBsdResolvConf::new().await;
+        configurator.apply().await?;
+        return Ok(Box::new(configurator) as Box<dyn DnsConfigurator>);
     }
 
     #[cfg(target_os = "linux")]
@@ -321,6 +328,19 @@ pub fn restore_stale_backups() {
             let _ = std::fs::remove_file(NM_DROPIN);
         }
     }
+
+    // OpenBSD: the direct takeover's backup file, same convention as Linux's
+    // direct mode. A hard kill skips the panic hook, so the restore happens
+    // here on the next start.
+    #[cfg(target_os = "openbsd")]
+    {
+        let backup = openbsd_backend::backup_path();
+        if backup.exists() {
+            tracing::info!("restoring stale DNS backup from previous crash");
+            let _ = std::fs::copy(&backup, "/etc/resolv.conf");
+            let _ = std::fs::remove_file(&backup);
+        }
+    }
 }
 
 /// The search domains that make bare hostnames resolve: `<network>.ray` for
@@ -404,6 +424,12 @@ mod macos;
 
 #[cfg(target_os = "macos")]
 use macos::MacosDynamicStoreDns;
+
+#[cfg(target_os = "openbsd")]
+mod openbsd_backend;
+
+#[cfg(target_os = "openbsd")]
+use openbsd_backend::OpenBsdResolvConf;
 
 /// The system's default resolvers *right now*, as opposed to the set captured
 /// when the backend was detected.
