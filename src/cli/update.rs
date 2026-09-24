@@ -504,7 +504,7 @@ pub(crate) fn print_daemon_log_tail() {
 /// Every caller is a service-manager invocation (`systemctl`, `launchctl`,
 /// `journalctl`), so there is nothing for it to do on Windows, where the SCM is
 /// driven through `windows_service` rather than a process.
-#[cfg(unix)]
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 pub(crate) fn run_cmd(program: &str, args: &[&str]) {
     match Command::new(program).args(args).status() {
         Ok(status) if status.success() => {}

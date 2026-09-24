@@ -262,6 +262,7 @@ pub(crate) async fn install_and_start_service(hostname: Option<String>) -> Resul
 /// When the service is (re)installed under `sudo`, grant the invoking user
 /// (`$SUDO_USER`) operator access so subsequent `ray` commands work without
 /// root. Best-effort: silent if there is no `$SUDO_USER` or the daemon refuses.
+#[cfg(any(target_os = "linux", target_os = "macos", windows))]
 pub(crate) async fn grant_operator_to_invoking_user() {
     let Ok(user) = std::env::var("SUDO_USER") else {
         return;
