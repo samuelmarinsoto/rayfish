@@ -3,7 +3,7 @@
 use crate::*;
 #[cfg(target_os = "linux")]
 use rayfish::init_system::InitSystem;
-#[cfg(any(target_os = "macos", target_os = "openbsd"))]
+#[cfg(target_os = "macos")]
 use std::path::Path;
 #[cfg(target_os = "linux")]
 use std::process::Command;
@@ -145,6 +145,11 @@ pub(crate) async fn cmd_up(
 /// VPN), we surface the tail of its log so the user knows what went wrong
 /// instead of seeing a cheerful "started" followed by a dead `ray status`.
 pub(crate) async fn install_and_start_service(hostname: Option<String>) -> Result<()> {
+    // OpenBSD has no system-service integration yet: `ray up` reports that and
+    // stops, so nothing below runs there. The binding is kept for the platforms
+    // that do reach the IPC handshake at the bottom.
+    #[cfg(not(any(target_os = "linux", target_os = "macos", windows)))]
+    let _ = hostname;
     // The Windows counterpart of the `geteuid() != 0` precheck in `cmd_up`, kept
     // here because every caller reaches the SCM through this function. Without
     // it the failure surfaces as a raw access-denied from `OpenSCManager`, which
@@ -199,54 +204,57 @@ pub(crate) async fn install_and_start_service(hostname: Option<String>) -> Resul
     }
 
     // Wait for the freshly started daemon to accept IPC, then activate the VPN.
-    let spinner = progress::spinner("starting service…");
-    let daemon = wait_for_daemon(DAEMON_REACHABLE_TIMEOUT).await;
-    spinner.finish_and_clear();
-    match daemon {
-        Some(mut stream) => {
-            ipc::send(&mut stream, ipc::IpcMessage::Up { hostname }).await?;
-            // A failed `up` still exits non-zero, but not before the grant below:
-            // the service is installed and running by this point, and the user's
-            // next move is to retry `ray up` without sudo. Taking that away as
-            // well would make the failure harder to recover from than it is.
-            let failed = match ipc::recv(&mut stream).await? {
-                ipc::IpcMessage::Ok { message } => {
-                    // Windows' equivalent of the grant below: the daemon
-                    // authorized against the SID this process claimed, so make
-                    // the claim permanent. Anything else rolls it back on drop.
-                    #[cfg(windows)]
-                    operator_claim.commit();
-                    println!("rayfish service started. {message}");
-                    None
-                }
-                ipc::IpcMessage::Error { message } => Some(message),
-                // Not `fail_unexpected`: exiting here would skip the grant below,
-                // and the ordering above is the whole point. Same treatment as a
-                // daemon-side error, so it exits non-zero after the grant.
-                other => Some(format!(
-                    "unexpected reply from the daemon: {other:?}\n    \
+    #[cfg(any(target_os = "linux", target_os = "macos", windows))]
+    {
+        let spinner = progress::spinner("starting service…");
+        let daemon = wait_for_daemon(DAEMON_REACHABLE_TIMEOUT).await;
+        spinner.finish_and_clear();
+        match daemon {
+            Some(mut stream) => {
+                ipc::send(&mut stream, ipc::IpcMessage::Up { hostname }).await?;
+                // A failed `up` still exits non-zero, but not before the grant below:
+                // the service is installed and running by this point, and the user's
+                // next move is to retry `ray up` without sudo. Taking that away as
+                // well would make the failure harder to recover from than it is.
+                let failed = match ipc::recv(&mut stream).await? {
+                    ipc::IpcMessage::Ok { message } => {
+                        // Windows' equivalent of the grant below: the daemon
+                        // authorized against the SID this process claimed, so make
+                        // the claim permanent. Anything else rolls it back on drop.
+                        #[cfg(windows)]
+                        operator_claim.commit();
+                        println!("rayfish service started. {message}");
+                        None
+                    }
+                    ipc::IpcMessage::Error { message } => Some(message),
+                    // Not `fail_unexpected`: exiting here would skip the grant below,
+                    // and the ordering above is the whole point. Same treatment as a
+                    // daemon-side error, so it exits non-zero after the grant.
+                    other => Some(format!(
+                        "unexpected reply from the daemon: {other:?}\n    \
                      the CLI and the daemon are probably different versions"
-                )),
-            };
-            // We're root here (installing the service). Grant the invoking user
-            // operator access so they can run `ray` without sudo from now on,
-            // the way `tailscale up --operator=$USER` does.
-            grant_operator_to_invoking_user().await;
-            if let Some(message) = failed {
-                fail_with("error", &message);
+                    )),
+                };
+                // We're root here (installing the service). Grant the invoking user
+                // operator access so they can run `ray` without sudo from now on,
+                // the way `tailscale up --operator=$USER` does.
+                grant_operator_to_invoking_user().await;
+                if let Some(message) = failed {
+                    fail_with("error", &message);
+                }
+                Ok(())
             }
-            Ok(())
-        }
-        None => {
-            #[cfg(windows)]
-            drop(operator_claim);
-            eprintln!(
-                "rayfish service was started but the daemon never became reachable.\n\
+            None => {
+                #[cfg(windows)]
+                drop(operator_claim);
+                eprintln!(
+                    "rayfish service was started but the daemon never became reachable.\n\
                  It likely crashed on startup. Common causes are DNS port 53 already in\n\
                  use, a conflicting route, or no permission to create the TUN device."
-            );
-            print_daemon_log_tail();
-            std::process::exit(1);
+                );
+                print_daemon_log_tail();
+                std::process::exit(1);
+            }
         }
     }
 }
