@@ -123,7 +123,7 @@ impl DnsConfigurator for OpenBsdResolvConf {
         let backup = backup_path();
         if backup.exists() {
             std::fs::copy(&backup, "/etc/resolv.conf")
-                .with_context("restoring /etc/resolv.conf backup")?;
+                .context("restoring /etc/resolv.conf backup")?;
             std::fs::remove_file(&backup).context("removing DNS backup")?;
         }
         Ok(())
