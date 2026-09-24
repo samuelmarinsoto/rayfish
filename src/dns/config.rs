@@ -87,7 +87,7 @@ impl SearchDomain {
     /// our own resolv.conf is in place captures its `search` line as "the
     /// host's", and without this the networks that line named would stay in the
     /// list forever, surviving the `ray leave` that should have dropped them.
-    #[cfg(any(target_os = "linux", test))]
+    #[cfg(any(target_os = "linux", target_os = "openbsd", test))]
     fn is_ours(&self) -> bool {
         self.0 == DNS_DOMAIN || self.0.ends_with(&format!(".{DNS_DOMAIN}"))
     }
