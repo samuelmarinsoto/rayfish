@@ -3,7 +3,7 @@
 use crate::*;
 #[cfg(target_os = "linux")]
 use rayfish::init_system::InitSystem;
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", target_os = "openbsd"))]
 use std::path::Path;
 #[cfg(target_os = "linux")]
 use std::process::Command;
