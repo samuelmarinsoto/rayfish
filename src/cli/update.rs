@@ -11,7 +11,7 @@
     target_os = "openbsd"
 ))]
 use std::path::Path;
-#[cfg(unix)]
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 use std::process::Command;
 #[cfg(target_os = "macos")]
 use std::process::Stdio;
