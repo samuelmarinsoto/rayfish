@@ -363,17 +363,37 @@ pub async fn route_peer_range(tun_name: &str) -> Result<()> {
         let mut delete: Vec<&str> = numeric.to_vec();
         delete.extend(["delete", family, "-net", net, iface_flag, tun_name]);
         let _ = Command::new("route").args(&delete).status();
-        let mut add: Vec<&str> = numeric.to_vec();
-        add.extend(["add", family, "-net", net, iface_flag, tun_name]);
-        let status = Command::new("route")
-            .args(&add)
-            .status()
-            .with_context(|| format!("run route {}", add.join(" ")))?;
-        anyhow::ensure!(
-            status.success(),
-            "route {} failed with {status}",
-            add.join(" ")
-        );
+
+        // OpenBSD's route(8) is picky about the `-net` modifier on inet6
+        // interface routes: the daemon's first run there failed with exit 1,
+        // so try the bare-destination form first and fall back to the `-net`
+        // spelling the other BSDs accept.
+        let mut candidates: Vec<Vec<&str>> = Vec::new();
+        if cfg!(target_os = "openbsd") {
+            candidates.push(["add", family, iface_flag, tun_name].to_vec());
+        }
+        candidates.push(["add", family, "-net", net, iface_flag, tun_name].to_vec());
+
+        let mut last = None;
+        for add in &candidates {
+            let status = Command::new("route")
+                .args(add)
+                .status()
+                .with_context(|| format!("run route {}", add.join(" ")))?;
+            if status.success() {
+                last = None;
+                break;
+            }
+            last = Some(status);
+        }
+        if let Some(status) = last {
+            let tried = candidates
+                .iter()
+                .map(|a| a.join(" "))
+                .collect::<Vec<_>>()
+                .join("; ");
+            anyhow::bail!("route add {net} via {tun_name} failed: tried [{tried}], last exit {status}");
+        }
     }
     Ok(())
 }
@@ -670,6 +690,19 @@ impl TunWrite for TunWriter {
     }
 
     async fn write_packet(&mut self, packet: &[u8]) -> anyhow::Result<()> {
+        #[cfg(target_os = "openbsd")]
+        {
+            // OpenBSD's tun(4) expects every write to carry a 4-byte
+            // address-family prefix in network byte order (reads come back
+            // with the same header, which tun-rs strips for us above). The
+            // overlay is IPv6-only, so the family is always AF_INET6 (24).
+            const AF_INET6_HEADER: [u8; 4] = [0, 0, 0, 24];
+            let mut framed = Vec::with_capacity(AF_INET6_HEADER.len() + packet.len());
+            framed.extend_from_slice(&AF_INET6_HEADER);
+            framed.extend_from_slice(packet);
+            self.dev.send(&framed).await?;
+        }
+        #[cfg(not(target_os = "openbsd"))]
         self.dev.send(packet).await?;
         Ok(())
     }
