@@ -1,0 +1,32 @@
+[package]
+name = "pty-process"
+version = "0.5.3"
+authors = ["Jesse Luehrs <doy@tozt.net>"]
+edition = "2024"
+
+description = "spawn commands attached to a pty"
+repository = "https://git.tozt.net/pty-process"
+readme = "README.md"
+keywords = ["pty", "spawn", "execute", "process"]
+categories = ["asynchronous", "command-line-interface"]
+license = "MIT"
+include = ["src/**/*", "LICENSE", "README.md", "CHANGELOG.md"]
+
+[dependencies]
+rustix = { version = "1.0.7", features = ["pty", "process", "fs", "termios"] }
+
+tokio = { version = "1.46.1", features = ["fs", "process", "net"], optional = true }
+
+[dev-dependencies]
+futures = "0.3.31"
+nix = { version = "0.30.1", default-features = false, features = ["signal", "fs", "term", "poll"] }
+regex = "1.11.1"
+tokio = { version = "1.46.1", features = ["full"] }
+
+[features]
+default = []
+
+async = ["tokio"]
+
+[package.metadata.docs.rs]
+all-features = true
