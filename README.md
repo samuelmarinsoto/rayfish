@@ -32,8 +32,8 @@ security audit. Do not rely on it for critical systems yet.
   provide keyless mesh SSH without replacing the host SSH server.
 - **More than a tunnel.** Rayfish includes exit nodes, direct file sharing,
   multi-device identity, and declarative network provisioning.
-- **Cross-platform.** Linux, macOS, Windows, Android, and FreeBSD are supported
-  at different maturity levels.
+- **Cross-platform.** Linux, macOS, Windows, Android, FreeBSD, and OpenBSD are
+  supported at different maturity levels.
 
 ## Install
 

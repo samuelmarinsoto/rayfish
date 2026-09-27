@@ -4,9 +4,14 @@
 //! lives in the library so the daemon's auto-updater can reuse it; this file
 //! adds spinners, changelog printing, root checks, and the service restart.
 
-#[cfg(any(target_os = "linux", target_os = "macos", target_os = "freebsd"))]
+#[cfg(any(
+    target_os = "linux",
+    target_os = "macos",
+    target_os = "freebsd",
+    target_os = "openbsd"
+))]
 use std::path::Path;
-#[cfg(unix)]
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 use std::process::Command;
 #[cfg(target_os = "macos")]
 use std::process::Stdio;
@@ -547,7 +552,7 @@ pub(crate) fn print_daemon_log_tail() {
 /// Every caller is a service-manager invocation (`systemctl`, `launchctl`,
 /// `journalctl`), so there is nothing for it to do on Windows, where the SCM is
 /// driven through `windows_service` rather than a process.
-#[cfg(unix)]
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 pub(crate) fn run_cmd(program: &str, args: &[&str]) {
     match Command::new(program).args(args).status() {
         Ok(status) if status.success() => {}

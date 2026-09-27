@@ -1,0 +1,31 @@
+#!/bin/ksh
+#
+# OpenBSD rc.d(8) script for the rayfish P2P mesh VPN daemon.
+#
+# Install (the daemon needs root for the TUN device, /etc/resolv.conf and
+# routes; the CLI stays unprivileged):
+#
+#   doas install -m 0555 rayfish.rcd /etc/rc.d/rayfish
+#   doas rcctl set rayfish status on
+#   doas rcctl start rayfish
+#
+# `ray up` does not manage this script: on OpenBSD the daemon is run by
+# rc(8) like any other port, not by an init system rayfish detects.
+
+daemon="/usr/local/bin/ray"
+daemon_flags="daemon"
+
+. /etc/rc.d/rc.subr
+
+# `ray daemon` runs in the foreground and logs to its own files, so rc.subr
+# must background it; without this, `rcctl start` hangs in the front task and
+# the daemon dies with the shell that interrupted it.
+rc_bg=YES
+
+# The daemon forks no children worth tracking and restarts cleanly; match it
+# by its argv so `rcctl check` finds it even if the pidfile is stale.
+pexp="/usr/local/bin/ray.*daemon"
+
+rc_reload=NO
+
+rc_cmd $1

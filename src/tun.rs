@@ -27,7 +27,11 @@ use std::path::PathBuf;
 // Windows drives the interface through PowerShell (`windows_process`), not a
 // synchronous `Command`, so nothing here needs the blocking spawn. Linux does
 // every one of these through netlink and spawns nothing at all.
-#[cfg(any(target_os = "macos", target_os = "freebsd"))]
+#[cfg(any(
+    target_os = "macos",
+    target_os = "freebsd",
+    target_os = "openbsd"
+))]
 use std::process::Command;
 #[cfg(not(target_os = "android"))]
 use std::sync::Arc;
@@ -374,7 +378,7 @@ pub async fn ensure_ipv6_addr(tun_name: &str, v6: Ipv6Addr) -> Result<()> {
 /// (`dns::MAGIC_DNS_V6`) included, so nothing else needs a host route.
 /// Idempotent, safe to call on every `up` cycle.
 #[cfg(target_os = "linux")]
-pub async fn route_peer_range(tun_name: &str) -> Result<()> {
+pub async fn route_peer_range(tun_name: &str, _v6: Ipv6Addr) -> Result<()> {
     use rtnetlink::RouteMessageBuilder;
 
     with_tun_link(tun_name, async |handle, index| {
@@ -393,25 +397,60 @@ pub async fn route_peer_range(tun_name: &str) -> Result<()> {
     .await
 }
 
-#[cfg(any(target_os = "macos", target_os = "freebsd"))]
-pub async fn route_peer_range(tun_name: &str) -> Result<()> {
+#[cfg(any(
+    target_os = "macos",
+    target_os = "freebsd",
+    target_os = "openbsd"
+))]
+pub async fn route_peer_range(tun_name: &str, _v6: Ipv6Addr) -> Result<()> {
     // utun is point-to-point, so the address prefix alone does not reliably
     // create the range route; macOS also drops it across an `up`/`down` cycle,
     // so it is re-added on every activate. `route add` fails if the route
     // already exists (e.g. an earlier `up`), so delete any stale entry first and
     // ignore its result. `200::/7` covers `dns::MAGIC_DNS_V6` too.
+    //
+    // On OpenBSD the interface goes in as a link gateway: `-link -iface tun0`.
+    // route(8) resolves an inet6 gateway with getaddrinfo(3), which has no
+    // notion of interface names, so `... -iface tun0` fails forever with
+    // "tun0: no address associated with name" — a hostname lookup, not an
+    // address race. `-link` switches parsing to AF_LINK, where the gateway is
+    // a bare if_nametoindex(3): the shape route(8)'s own EXAMPLES use for a
+    // directly reachable inet6 route, and it works the moment the device
+    // exists. macOS and FreeBSD spell the gateway form `-interface ifname`
+    // and keep `-net`; OpenBSD takes neither. Output is captured so a failure
+    // names the actual route(8) complaint instead of a bare exit status.
+    let numeric: &[&str] = if cfg!(target_os = "openbsd") {
+        &[]
+    } else {
+        &["-n"]
+    };
+    let gateway_form: &[&str] = if cfg!(target_os = "openbsd") {
+        &["-link", "-iface"]
+    } else {
+        &["-net", "-interface"]
+    };
     let ranges: &[(&str, &str)] = &[("-inet6", "200::/7")];
     for (family, net) in ranges.iter().copied() {
-        let _ = Command::new("route")
-            .args(["-n", "delete", family, "-net", net, "-interface", tun_name])
-            .status();
-        let status = Command::new("route")
-            .args(["-n", "add", family, "-net", net, "-interface", tun_name])
-            .status()
-            .with_context(|| format!("run route add {family} {net}"))?;
+        let mut delete: Vec<&str> = numeric.to_vec();
+        delete.extend(["delete", family, net]);
+        delete.extend_from_slice(gateway_form);
+        delete.extend([tun_name]);
+        let _ = Command::new("route").args(&delete).status();
+        let mut add: Vec<&str> = numeric.to_vec();
+        add.extend(["add", family, net]);
+        add.extend_from_slice(gateway_form);
+        add.extend([tun_name]);
+        let out = Command::new("route")
+            .args(&add)
+            .output()
+            .with_context(|| format!("run route {}", add.join(" ")))?;
+        let stderr = String::from_utf8_lossy(&out.stderr);
+        let stderr = stderr.trim();
         anyhow::ensure!(
-            status.success(),
-            "route add {family} {net} failed with {status}"
+            out.status.success(),
+            "route {} failed with {}: {stderr}",
+            add.join(" "),
+            out.status
         );
     }
     Ok(())
@@ -432,7 +471,7 @@ pub async fn unroute_peer_range(_tun_name: &str) -> Result<()> {
 }
 
 #[cfg(target_os = "windows")]
-pub async fn route_peer_range(tun_name: &str) -> Result<()> {
+pub async fn route_peer_range(tun_name: &str, _v6: Ipv6Addr) -> Result<()> {
     let index = windows_interface_index(tun_name).await?;
     let mut installed = Vec::new();
     for &(prefix, next_hop) in &WINDOWS_PEER_ROUTES {
@@ -608,7 +647,11 @@ pub async fn set_link_down(tun_name: &str) -> Result<()> {
 
 #[cfg(not(target_os = "android"))]
 async fn set_link_state(tun_name: &str, up: bool) -> Result<()> {
-    #[cfg(any(target_os = "macos", target_os = "freebsd"))]
+    #[cfg(any(
+        target_os = "macos",
+        target_os = "freebsd",
+        target_os = "openbsd"
+    ))]
     {
         let state = if up { "up" } else { "down" };
         let status = Command::new("ifconfig")

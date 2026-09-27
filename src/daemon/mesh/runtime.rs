@@ -1297,7 +1297,7 @@ impl Daemon {
             // default route.
             // `200::/7` also delivers `dns::MAGIC_DNS_V6`, so the resolver needs
             // no host route of its own.
-            if let Err(e) = tun::route_peer_range(&tun_name).await {
+            if let Err(e) = tun::route_peer_range(&tun_name, my_v6).await {
                 let err = format!("{e:#}");
                 tracing::warn!(error = %err, "failed to route 200::/7 into TUN");
                 warnings.push(format!("failed to route IPv6 peer range into TUN: {err}"));

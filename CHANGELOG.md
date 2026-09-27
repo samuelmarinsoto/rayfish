@@ -8,6 +8,10 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
+- **OpenBSD is a supported platform.** The mesh daemon, CLI, and mesh SSH run
+  on OpenBSD (amd64); `contrib/rayfish.rcd` ships an rc.d(8) service script
+  for the daemon.
+
 - `ray identityof <contact-id>` looks up the advertised device identity without
   connecting to the peer or requesting approval.
 
@@ -280,6 +284,13 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Fixed
 
+- **On OpenBSD, mesh SSH sessions killed by a signal report the signal instead
+  of a made-up exit status, and a signal to `ssh host cmd` reaches the whole
+  command.** OpenBSD's shell exits with `128 + signal` rather than dying by
+  signal, and the command it wrapped used to outlive the session holding the
+  connection open. Sessions now run in their own process group, so the signal
+  reaches everything the session started and the client sees `killed by
+  SIGTERM` (or whatever was sent), the way a stock sshd reports it.
 - **Mesh connections recover when a replacement connection fails to arrive.**
   Rayfish retries the missing link automatically, so SSH and other traffic do
   not have to wait for another recovery trigger.

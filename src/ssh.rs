@@ -72,7 +72,7 @@ use std::os::fd::AsFd;
 use std::os::unix::fs::MetadataExt;
 use std::path::PathBuf;
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicI32, AtomicU32, Ordering};
 use std::time::Duration;
 
 use anyhow::{Context, Result};
@@ -436,9 +436,15 @@ impl Drop for AgentSocket {
 #[derive(Clone)]
 struct ChildProc {
     pid: Arc<AtomicU32>,
-    /// A PTY child is a session leader, so its pid is also its process group
-    /// and the signal goes to the whole foreground job, like a terminal's
-    /// ^C. A pipe child shares this daemon's group: signal the process alone.
+    /// The last signal this handle delivered to the child, or 0. OpenBSD's
+    /// pdksh answers a fatal signal by exiting normally with `128 + signal`
+    /// (see `Exit::from_pipe_status`), so the waiter needs to know what we
+    /// sent to decode that into the signal the client asked about.
+    delivered: Arc<AtomicI32>,
+    /// Every session child runs in its own process group (a PTY child gets it
+    /// from pty-process's setsid; a pipe child calls setpgid before exec), so
+    /// the signal goes to `-pid`: the whole job, like a terminal's ^C, and a
+    /// grandchild that survives its shell still dies with the session.
     process_group: bool,
 }
 
@@ -446,6 +452,7 @@ impl ChildProc {
     fn new(process_group: bool) -> Self {
         Self {
             pid: Arc::new(AtomicU32::new(0)),
+            delivered: Arc::new(AtomicI32::new(0)),
             process_group,
         }
     }
@@ -464,7 +471,9 @@ impl ChildProc {
         };
         // SAFETY: a plain kill(2); an already-exited pid fails with ESRCH.
         unsafe {
-            libc::kill(target, sig);
+            if libc::kill(target, sig) == 0 {
+                self.delivered.store(sig, Ordering::Relaxed);
+            }
         }
     }
 }
@@ -584,7 +593,7 @@ impl SshHandler {
         let peer = self.user;
         let (resize_tx, resize_rx) = mpsc::unbounded_channel();
         state.resize_tx = Some(resize_tx);
-        let child = ChildProc::new(pty.is_some());
+        let child = ChildProc::new(true);
         state.child = Some(child.clone());
 
         tokio::spawn(async move {

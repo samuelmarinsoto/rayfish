@@ -45,6 +45,23 @@ impl Exit {
             (None, None) => Self::Code(0),
         }
     }
+
+    /// Decode a pipe session's exit given the last signal we delivered to it.
+    ///
+    /// On OpenBSD the shell is pdksh, which answers a fatal signal by exiting
+    /// normally with `128 + signal` instead of dying by signal (Linux shells
+    /// `exec` a single `-c` command, so the killed pid is the command itself
+    /// and the raw status already carries the signal). When we just sent
+    /// signal N and the child exits with code 128+N, that code is the shell
+    /// reporting death by signal, so report it as one, the way a stock sshd
+    /// does. Anything else is taken at face value.
+    #[cfg(target_os = "openbsd")]
+    pub(super) fn from_pipe_status(status: std::process::ExitStatus, delivered: i32) -> Self {
+        if delivered > 0 && status.code() == Some(128 + delivered) {
+            return Self::Signal(signal_name(delivered));
+        }
+        Self::from_status(status)
+    }
 }
 
 fn signal_name(signal: i32) -> Sig {
@@ -213,6 +230,17 @@ pub(super) async fn run_pipe_session(
     unsafe {
         cmd.pre_exec(drop);
     }
+    // SAFETY: puts the child in its own process group (pgid = pid) so signal
+    // requests reach the whole job and a grandchild outliving its shell dies
+    // with the session, the way a stock sshd tears sessions down.
+    unsafe {
+        cmd.pre_exec(|| {
+            if libc::setpgid(0, 0) != 0 {
+                return Err(std::io::Error::last_os_error());
+            }
+            Ok(())
+        });
+    }
     let mut child = cmd.spawn().context("spawning command")?;
     child_proc
         .pid
@@ -245,7 +273,22 @@ pub(super) async fn run_pipe_session(
     let _ = out_task.await;
     let _ = err_task.await;
     stdin_task.abort();
-    Ok(Exit::from_status(status))
+    Ok(exit_from(status, &child_proc))
+}
+
+/// Report a pipe session's end. See [`Exit::from_pipe_status`] for why the
+/// delivered signal matters on OpenBSD.
+fn exit_from(status: std::process::ExitStatus, child_proc: &ChildProc) -> Exit {
+    #[cfg(target_os = "openbsd")]
+    {
+        let delivered = child_proc.delivered.load(Ordering::Relaxed);
+        Exit::from_pipe_status(status, delivered)
+    }
+    #[cfg(not(target_os = "openbsd"))]
+    {
+        let _ = child_proc;
+        Exit::from_status(status)
+    }
 }
 
 async fn copy_output<F, Fut, E>(reader: &mut (impl AsyncRead + Unpin), mut send: F)
